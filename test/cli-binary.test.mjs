@@ -43,3 +43,25 @@ test('pinned binary preserves user-only JSON record reads without credentials or
   assert.deepEqual(await readdir(scratch), ['config'], 'JSON reads must not produce local NDJSON artifacts');
   assert.deepEqual(await readdir(join(scratch, 'config')), [], 'external user tokens must not create local auth/key state');
 });
+
+test('pinned binary accepts confirmed high-risk plans in offline dry-run mode', { skip: !binary }, async t => {
+  const scratch = await mkdtemp(join(tmpdir(), 'larksmith-high-risk-plan-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await mkdir(join(scratch, 'config'));
+  const options = { cwd: scratch, env: userEnvironment(scratch, { appId: 'cli_synthetic', accessToken: 'synthetic' }), timeout: 10_000, maxBuffer: 64 * 1024 };
+  for (const [command, flags] of [
+    [['calendar', 'calendars', 'delete'], { 'calendar-id': 'synthetic-calendar' }],
+    [['application', '+slash-command-delete'], { 'command-id': 'synthetic-command' }],
+  ]) {
+    const parameters = { ...flags, 'dry-run': true };
+    assert.throws(() => commandArguments(command, parameters, 'write'), /explicit_user_confirmation/);
+    const prepared = commandArguments(command, parameters, 'write', true);
+    assert.ok(prepared.args.includes('--dry-run=true'));
+    assert.ok(prepared.args.includes('--yes'));
+    await writeFile(join(scratch, 'config/policy.yml'), prepared.policy, { mode: 0o600 });
+    const result = JSON.parse((await execute(binary, prepared.args, options)).stdout);
+    assert.equal(result.ok, true);
+    assert.equal(result.dry_run, true);
+    assert.equal(result.identity, 'user');
+  }
+});

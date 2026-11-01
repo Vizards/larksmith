@@ -25,6 +25,30 @@ test('user-only dispatch rejects both raw APIs and shortcuts restricted to bot i
   assert.equal(exported.unavailableReason, 'requires_local_or_persistent_runtime');
 });
 
+test('annotated high-risk commands are discoverable with confirmation and identity checks intact', () => {
+  const annotated = catalog({ limit: 1000 }).commands
+    .map(({ command }) => catalog({ command }))
+    .filter(entry => entry.help.includes('Risk: high-risk-write ('));
+  assert.equal(annotated.length, 39);
+  assert.equal(annotated.filter(entry => entry.executable).length, 35);
+  for (const entry of annotated) {
+    assert.equal(entry.risk, 'high-risk-write', entry.id);
+    if (!entry.executable) {
+      assert.equal(entry.unavailableReason, 'upstream_user_identity_not_supported', entry.id);
+      assert.throws(() => commandArguments(entry.command, {}, 'write', true), /upstream_user_identity_not_supported/);
+      continue;
+    }
+    assert.throws(() => commandArguments(entry.command, {}, 'read', true), /command_risk_does_not_match/);
+    assert.throws(() => commandArguments(entry.command, {}, 'write'), /high_risk_command_requires_explicit_user_confirmation/);
+    assert.throws(() => commandArguments(entry.command, { yes: true }, 'write'), /high_risk_command_requires_explicit_user_confirmation/);
+    const prepared = commandArguments(entry.command, {}, 'write', true);
+    assert.ok(prepared.args.includes('--yes'));
+    assert.ok(prepared.args.includes('--as=user'));
+    assert.match(prepared.policy, /max_risk: high-risk-write/);
+    assert.match(prepared.policy, /allow_unannotated: false/);
+  }
+});
+
 test('Base record reads force inline JSON despite upstream NDJSON defaults and retain business JSON inputs', () => {
   const listed = commandArguments(['base', '+record-list'], { 'base-token': 'synthetic', 'table-id': 'tblSynthetic', limit: 50 }, 'read');
   assert.ok(listed.args.includes('--json'));

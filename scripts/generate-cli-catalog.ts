@@ -29,8 +29,8 @@ try {
   for (let start = 0; start < paths.length; start += 8) {
     entries.push(...await Promise.all(paths.slice(start, start + 8).map(async (command: string[]) => {
       const help = await run([...command, '--help']);
-      const metadata = parseHelp(command, help);
       const api = raw.get(command.join(' ')) as any;
+      const metadata = parseHelp(command, help, api?._meta?.risk);
       return { ...metadata, ...(api ? { schema: api.inputSchema, authorization: api._meta } : {}) };
     })));
   }
