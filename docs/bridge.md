@@ -28,9 +28,13 @@ larksmith 通过远程 MCP 提供官方飞书 CLI 能力。Agent 按任务选择
 }
 ```
 
-目录由 CLI schema 和官方 help 生成。固定版本 1.0.95 包含 783 项目录条目，
-639 项通过命令级调度检查；各条目的 `executable`、参数说明和原因字段指导具体调用。
-为所选账号配置对应 user scopes，并确认目标资源访问权限。
+目录由 CLI schema 和官方 help 生成。固定版本 1.0.98 包含 784 项目录条目，
+669 项符合命令级静态调度条件；其余 102 项属于运行流程例外，13 项仅支持 bot。
+各条目的 `executable`、参数说明和原因字段指导具体调用。实际调用使用所选账号的
+user scopes 和目标资源权限；业务验证以具体操作的测试结果为准。
+
+风险同时取自原始 API schema 和官方 help；help 支持风险标签后的括号说明。
+仅一处提供已知风险时使用该值；未知、重复或相互冲突的标注会阻止调度。
 
 执行器将 argv 直接交给 CLI，并设置该命令的 user 身份与风险策略。CLI 负责业务参数
 校验和 API 调用。请求输入最大 256 KiB、输出最大 1 MiB、CLI 执行时间最长 120 秒；
@@ -90,6 +94,11 @@ larksmith 通过远程 MCP 提供官方飞书 CLI 能力。Agent 按任务选择
 | 身份与风险元数据 | 调度选择具有 user 身份和明确风险等级的命令。 |
 | 表格与文档快捷工具 | 提供明确的表格范围、文档读取模式和图片输出。 |
 
+Base 记录读取在上游默认生成 NDJSON 文件；桥接通用调度显式指定 JSON，返回内联数据，
+保留业务 `json` 参数。JSON 模式沿用上游较小的读取窗口（list 默认 100、最大 200），
+继续通过显式分页取得大结果。远程目录同时检查原始 API 身份元数据与快捷命令的 `--as`
+帮助；上游仅支持 bot 的命令不可派发，服务不会切换身份。
+
 新增适配时在此说明原因和范围；普通命令的发现问题统一在目录生成器中处理。
 
 ## 客户端授权与维护
@@ -104,6 +113,6 @@ PKCE 和所有者登录。各客户端独立保存自己的 OAuth 凭据。
 
 CLI 维护步骤见 [贡献指南](../CONTRIBUTING.md)。
 
-参考：[官方 CLI 扩展](https://github.com/larksuite/cli/tree/v1.0.95/extension)、
+参考：[官方 CLI 扩展](https://github.com/larksuite/cli/tree/v1.0.98/extension)、
 [OpenAI 文件输入](https://developers.openai.com/plugins/reference#define-file-inputs)、
 [Vercel Node 运行时](https://vercel.com/docs/functions/runtimes/node-js)。

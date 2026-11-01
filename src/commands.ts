@@ -30,6 +30,10 @@ export function unavailable(entry: CommandMetadata): string | null {
   if (!entry.risk) return 'upstream_risk_unannotated';
   if (entry.authorization?.access_tokens && !entry.authorization.access_tokens.includes('user')) return 'upstream_user_identity_not_supported';
   if (!entry.flags.as) return 'upstream_user_identity_flag_unavailable';
+  // Shortcuts have no raw API schema. Their --as help is the upstream identity
+  // contract; do not advertise bot-only shortcuts as executable for a user.
+  const identities = /^identity type: ((?:user|bot)(?: \| (?:user|bot))*)$/.exec(entry.flags.as.description)?.[1].split(' | ');
+  if (identities && !identities.includes('user')) return 'upstream_user_identity_not_supported';
   return null;
 }
 

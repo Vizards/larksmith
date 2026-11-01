@@ -32,7 +32,7 @@ CI 使用 `https://mcp.example.com` 作为测试地址。
 以及已开通的 user scopes。应用应支持官方 CLI 的 device authorization 和 refresh
 流程，可见范围包含所选用户。
 
-应用准备参考 [官方 CLI 入门](https://github.com/larksuite/cli/blob/v1.0.95/README.md)。
+应用准备参考 [官方 CLI 入门](https://github.com/larksuite/cli/blob/v1.0.98/README.md)。
 通过该应用的官方 `auth status` 或 `/open-apis/authen/v1/user_info` 获取用户身份。
 服务将实际登录用户与 `expectedOpenId` 核对，完成账号绑定。
 

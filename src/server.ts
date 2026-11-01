@@ -107,7 +107,7 @@ export function makeApp(config) {
           description: 'Read bridge status and the available user-account connections. Does not connect or change an upstream account.',
           inputSchema: z.object({}),
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-        }, async () => ({ content: [{ type: 'text', text: JSON.stringify({ bridge: PRODUCT_NAME, identityMode: 'user-only', cliVersion: '1.0.95', capabilities: { catalog: 'lark_cli_catalog', upload: { nativeFileInput: true, inlineBytes: 262144, stagedBytes: 33554432, stagingTtlHours: 24, destination: 'Drive', documentAttachmentInsertion: false }, writeReceiptRetentionDays: 30 }, accounts: await Promise.all(accountNames.map(async account => {
+        }, async () => ({ content: [{ type: 'text', text: JSON.stringify({ bridge: PRODUCT_NAME, identityMode: 'user-only', cliVersion: catalog().cliVersion, capabilities: { catalog: 'lark_cli_catalog', upload: { nativeFileInput: true, inlineBytes: 262144, stagedBytes: 33554432, stagingTtlHours: 24, destination: 'Drive', documentAttachmentInsertion: false }, writeReceiptRetentionDays: 30 }, accounts: await Promise.all(accountNames.map(async account => {
           try { return await accounts.status(account); } catch (error) { return { account, connected: false, error: error.code || 'state_unavailable' }; }
         })) }) }] }));
         server.registerTool('lark_connect_account', {
