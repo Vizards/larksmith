@@ -1,0 +1,12 @@
+{
+  "primary": {
+    "appId": "cli_REPLACE_APP_ID",
+    "expectedOpenId": "ou_REPLACE_OPEN_ID",
+    "label": "Primary",
+    "brand": "feishu",
+    "scopes": [
+      "offline_access",
+      "docx:document:readonly"
+    ]
+  }
+}

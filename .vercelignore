@@ -1,0 +1,22 @@
+# Runtime downloads and local acceptance artifacts are never deployment inputs.
+artifacts/
+.env*
+.DS_Store
+.git/
+.vercel/
+node_modules/
+dist/
+*.local.json
+config/accounts.json
+private/
+secrets/
+*.pem
+*.key
+*.enc
+FEISHU_ACCOUNTS_JSON
+BRIDGE_OWNER_ID
+BRIDGE_STATE_KEY
+BRIDGE_JWKS
+BRIDGE_OWNER_HASH
+CRON_SECRET
+OWNER_PASSWORD

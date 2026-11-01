@@ -1,0 +1,13 @@
+larksmith integrates the official Lark CLI, Vercel, Upstash and MCP clients.
+Third-party names identify the services and software used by the project.
+
+The official lark-cli binary is downloaded unmodified during a build from:
+https://github.com/larksuite/cli
+The version and SHA-256 are pinned in config/cli-version.json.
+config/cli-catalog.json contains metadata and help generated from that CLI.
+The CLI and generated help remain subject to their upstream MIT license:
+Copyright (c) 2026 Lark Technologies Pte. Ltd.
+The complete upstream notice is in licenses/lark-cli-MIT.txt.
+
+JavaScript dependencies retain their own licenses in their distributed
+packages; exact versions and sources are recorded in package-lock.json.

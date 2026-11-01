@@ -1,0 +1,39 @@
+{
+  "name": "larksmith",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Self-hosted Feishu MCP service powered by the official CLI, Vercel and Upstash",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "probe": "node scripts/smoke-probe.mjs",
+    "test": "npm run compile && node --test test/*.test.mjs",
+    "compile": "node scripts/compile.mjs",
+    "typecheck": "tsc --noEmit",
+    "catalog": "node scripts/generate-cli-catalog.ts",
+    "release:check": "node scripts/release-check.mjs",
+    "setup": "node scripts/setup.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/node": "2.1.2",
+    "@modelcontextprotocol/server": "2.4.0",
+    "@upstash/redis": "1.40.0",
+    "@vercel/blob": "2.8.0",
+    "jose": "6.2.2",
+    "oidc-provider": "9.12.2",
+    "saxes": "6.0.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.4",
+    "@types/oidc-provider": "9.12.1",
+    "typescript": "7.0.2"
+  },
+  "type": "module",
+  "license": "MIT",
+  "overrides": {
+    "zod": "$zod"
+  }
+}

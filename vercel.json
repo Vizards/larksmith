@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "framework": null,
+  "crons": [
+    {
+      "path": "/internal/maintenance",
+      "schedule": "0 1 * * *"
+    }
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "**": false,
+      "main": true
+    }
+  }
+}
