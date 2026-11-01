@@ -23,4 +23,7 @@ jobs:
           BRIDGE_ISSUER: https://mcp.example.com
           BUILD_RUNTIME_PROBE: '1'
       - run: npm run probe
+      - run: node --test test/cli-binary.test.mjs
+        env:
+          LARK_TEST_BINARY: ${{ github.workspace }}/.vercel/output/functions/api/bridge.func/bin/lark-cli
       - run: npm run release:check

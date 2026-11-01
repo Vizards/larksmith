@@ -5,7 +5,7 @@ import { validateDocumentXml } from '../dist/src/document-input.js';
 import { parseHelp } from '../dist/src/cli-metadata.js';
 
 test('generated catalog discovers hundreds of upstream commands without handwritten per-command schemas', () => {
-  assert.equal(catalog().totalCatalog, 783);
+  assert.equal(catalog().totalCatalog, 784);
   const search = catalog({ command: ['drive', '+search'] });
   assert.equal(search.risk, 'read'); assert.ok(search.flags['query']);
   assert.equal(catalog({ command: ['drive', 'files', 'list'] }).schema.type, 'object');
@@ -13,6 +13,28 @@ test('generated catalog discovers hundreds of upstream commands without handwrit
   assert.ok(catalog({ command: ['docs', '+create'] }).flags['reference-map']);
   assert.ok(catalog({ query: 'calendar', limit: 3 }).nextOffset === 3);
   for (const query of ['mail', 'task', 'base', 'okr']) assert.ok(catalog({ query }).total > 0);
+});
+
+test('user-only dispatch rejects both raw APIs and shortcuts restricted to bot identities', () => {
+  for (const command of [['im', 'chats', 'create'], ['im', '+messages-edit'], ['vc', '+meeting-invite'], ['vc', '+meeting-join'], ['vc', '+meeting-leave']]) {
+    assert.equal(catalog({ command }).executable, false);
+    assert.equal(catalog({ command }).unavailableReason, 'upstream_user_identity_not_supported');
+    assert.throws(() => commandArguments(command, {}, 'write'), /upstream_user_identity_not_supported/);
+  }
+  const exported = catalog({ command: ['apps', '+export'] });
+  assert.equal(exported.unavailableReason, 'requires_local_or_persistent_runtime');
+});
+
+test('Base record reads force inline JSON despite upstream NDJSON defaults and retain business JSON inputs', () => {
+  const listed = commandArguments(['base', '+record-list'], { 'base-token': 'synthetic', 'table-id': 'tblSynthetic', limit: 50 }, 'read');
+  assert.ok(listed.args.includes('--json'));
+  for (const command of [['base', '+record-get'], ['base', '+record-search']]) {
+    const prepared = commandArguments(command, { json: { record_id_list: ['recSynthetic'] } }, 'read');
+    assert.ok(prepared.args.includes('--format=json'));
+    assert.ok(prepared.args.includes('--json={"record_id_list":["recSynthetic"]}'));
+    assert.equal(prepared.args.includes('--json'), false);
+  }
+  assert.throws(() => commandArguments(['base', '+record-list'], { format: 'ndjson' }, 'read'), /reserved_flag/);
 });
 
 test('generic dispatch separates risk and identity, preserves argv values and excludes runtime-management inputs', () => {

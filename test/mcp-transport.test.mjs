@@ -10,6 +10,7 @@ import { syntheticAccounts } from './support/accounts.mjs';
 import { passwordHash } from '../dist/src/oauth.js';
 import { StateDocument, StateUnavailable } from '../dist/src/state.js';
 import { MemoryBackend } from './support/memory-backend.mjs';
+import { catalog } from '../dist/src/commands.js';
 
 async function fixture(t, bindings = syntheticAccounts) {
   let app, reads = 0, unavailable = false;
@@ -62,6 +63,7 @@ test('single-account deployments expose only the configured identity and reject 
   const schema = read.inputSchema.properties.account;
   assert.deepEqual(schema.enum ?? [schema.const], ['alpha']);
   const status = await (await f.request('POST', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'lark_bridge_status', arguments: {} } })).json();
+  assert.equal(JSON.parse(status.result.content[0].text).cliVersion, catalog().cliVersion);
   assert.deepEqual(JSON.parse(status.result.content[0].text).accounts.map(account => account.account), ['alpha']);
   const rejected = await (await f.request('POST', { jsonrpc: '2.0', id: 3, method: 'tools/call', params: {
     name: 'lark_api_read', arguments: { account: 'beta', path: '/open-apis/sheets/v3/spreadsheets/synthetic' },
