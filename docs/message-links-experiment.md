@@ -59,7 +59,11 @@
 
 官方 CLI 的富文本解析失败占位会用同身份的单消息 OpenAPI 核对；已撤回的消息只保留
 撤回标记，不暴露快照旧正文。其他解析失败保留 `unavailable`，不会谎报已读完整。
-媒体仅保留官方 CLI 的资源引用。`fullConversation=false` 表示未读取整个群历史。
+消息链接结果仅保留官方 CLI 的资源引用。需要看图时，将返回的 `om_` messageId 与
+同一 account 传给 `lark_messages_image`；该工具按当前消息核验后返回一张原生图像，
+多图按 imageIndex 选择。支持纯图片与 post 内图片、单张最多 2 MiB，不使用独立网页
+Cookie，不提供 snapshot 内部数字 ID 到图片资源的猜测转换。
+`fullConversation=false` 表示未读取整个群历史。
 
 整个读取设 90 秒期限，CLI 单次最多 20 秒；网页解析/快照共用 15 秒，单次反查最多
 15 秒及 64 KiB。结果最多 10 万字符。没有自动请求重试，不更换账号或 bot。

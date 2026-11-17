@@ -52,7 +52,15 @@ user scopes 和目标资源权限；业务验证以具体操作的测试结果�
 
 ## 图片与文件
 
-`lark_docs_image` 返回原生 MCP 图片。`lark_files_read` 读取 Drive 文件或文档附件，
+`lark_docs_image` 读取文档图片；`lark_messages_image` 读取聊天消息图片，两者均返回
+原生 MCP 图像。消息图片传入官方 `om_` messageId 和同一 account；纯图片消息和
+富文本 post 内图片都可读取。多图按零起始的 imageIndex 选择（默认 0），返回
+availableImages；需要其他图片时继续指定序号。工具先读取当前消息，核验未撤回并
+从真实图片元素提取 key，再通过官方 CLI 下载，不能用消息文字里伪造的引用代替。
+支持 PNG、JPEG、GIF、WebP，每张最多 2 MiB；不自动缩图、不保证动画帧展示，暂不
+读取消息表情、视频或通用附件。链接解析与图片读取是独立步骤，不自动批量下载整段聊天。
+
+`lark_files_read` 读取 Drive 文件或文档附件，
 `lark_files_upload` 创建 Drive 文件，返回文件 token、URL、字节数和 SHA-256。
 
 | 方式 | 用法 |
@@ -93,6 +101,7 @@ user scopes 和目标资源权限；业务验证以具体操作的测试结果�
 | apps、event、Drive 同步、`docs/+script` | 这些流程需要持久工作目录或长期执行，应在适合的 CLI 环境中运行。 |
 | 身份与风险元数据 | 调度选择具有 user 身份和明确风险等级的命令。 |
 | 表格与文档快捷工具 | 提供明确的表格范围、文档读取模式和图片输出。 |
+| 聊天图片传输 | `im/+messages-resources-download` 被上游标为 write，因为会写本地文件；此适配固定 type=image、临时输出路径和 user 身份，仅执行远程读取，并以 MCP image 返回真实字节。完成或失败后清理临时目录。它不开放任意路径或更改通用命令的风险分类。 |
 | 复制消息链接（实验，默认关闭） | 公共 CLI 尚无 token 链接解析入口；使用网页只读 RPC 解析定位、文本快照；读取当前话题时先反查候选会话并精确比对内部 ID，再接回官方 CLI。明确的 oc_ + 非负 position 链接直接使用官方读取，分页和失败边界不隐藏。独立网页会话经身份核验和每日心跳维护；尚不能保证长期续期，也不下载媒体。见[实验范围](message-links-experiment.md)。 |
 
 Base 记录读取在上游默认生成 NDJSON 文件；桥接通用调度显式指定 JSON，返回内联数据，
