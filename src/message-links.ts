@@ -1,3 +1,5 @@
+import { parseChatPositionLink, readConversation, reverseChatId, type OfficialReader } from './message-conversations.ts';
+
 // Experimental Feishu web RPCs. These are not OpenAPI/CLI endpoints.
 // Keep the projection explicit: never return raw packets, cookies, media keys,
 // or unrelated conversation history with a copied-message snapshot.
@@ -238,13 +240,26 @@ export interface MessageLinkOptions {
   session: (account: string) => Promise<MessageLinkSession | undefined>;
   rejected?: (account: string, session: MessageLinkSession) => Promise<void>;
   fetcher?: typeof fetch;
+  official?: (account: string) => OfficialReader;
 }
 
 export class MessageLinks {
   private options: MessageLinkOptions;
   constructor(options: MessageLinkOptions) { this.options = options; }
-  async read(account: string, input: string, operation: 'resolve' | 'snapshot' = 'snapshot') {
-    if (!['resolve', 'snapshot'].includes(operation)) return fail('invalid_message_link_operation');
+  async read(account: string, input: string, operation: 'resolve' | 'snapshot' | 'conversation' = 'conversation', replyPageToken?: string) {
+    if (!['resolve', 'snapshot', 'conversation'].includes(operation)) return fail('invalid_message_link_operation');
+    if (replyPageToken && operation !== 'conversation') return fail('message_link_invalid_pagination');
+    const deadline = Date.now() + 90_000;
+    if (operation === 'conversation' && !this.options.official) return fail('message_link_official_reader_unavailable');
+    // Explicit OpenAPI links require only the selected user's OAuth, no web session.
+    let pathname: string;
+    try { pathname = new URL(input).pathname; } catch { return fail('invalid_message_link'); }
+    if (pathname === '/client/chat/open') {
+      const target = parseChatPositionLink(input);
+      if (operation !== 'conversation') return fail('message_link_use_conversation');
+      return { account, experimental: true, operation, source: 'official-cli', identity: 'user',
+        ...await readConversation(target, { deadline, official: this.options.official!(account) }, replyPageToken) };
+    }
     const link = parseMessageLink(input);
     const session = await this.options.session(account);
     if (!session?.cookie) return fail('web_session_required');
@@ -286,6 +301,20 @@ export class MessageLinks {
       }
     };
     const location = permission(await request(1151));
+    if (operation === 'conversation') {
+      if (location.position < 0) return fail('message_link_requires_nonnegative_position');
+      const copied = snapshot(await request(1152), location.chatId);
+      if (copied.selectedMessageIds.length !== 1) return fail('message_link_conversation_requires_single_selection');
+      const selected = copied.messages.find(message => message.messageId === copied.selectedMessageIds[0]);
+      return { account, experimental: true, operation, source: 'web-link-and-official-cli', identity: 'configured-web-session-and-user-oauth',
+        ...await readConversation({ chatId: location.chatId, chatName: copied.chatName, position: location.position,
+          createTimeSeconds: selected && 'createTimeSeconds' in selected ? selected.createTimeSeconds : undefined }, {
+          deadline, official: this.options.official!(account), reverse: async openChatId => {
+            try { return await reverseChatId(openChatId, session.cookie, AbortSignal.timeout(Math.max(1, Math.min(15000, deadline - Date.now()))), this.options.fetcher); }
+            catch (error) { if (error instanceof MessageLinkError && error.code === 'web_session_expired') await this.options.rejected?.(account, session); throw error; }
+          }
+        }, replyPageToken) };
+    }
     return { account, experimental: true, source: 'feishu-web-private', identity: 'separately-configured-web-session',
       operation, location, ...(operation === 'snapshot' ? snapshot(await request(1152), location.chatId) : {}) };
   }

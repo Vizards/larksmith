@@ -8,9 +8,9 @@
 `lark_message_link_read` 接收 `account`、`url`，以及 `operation`：
 
 - `resolve`：检查链接权限，返回原会话的位置与客户端跳转链接。
-- `snapshot`（默认）：先检查权限，再读取复制链接的消息文本、元数据，以及快照明确关联的回复。
+- `snapshot`：先检查权限，再读取复制链接的消息文本、元数据，以及快照明确关联的回复。
 
-仅接受 `https://applink.feishu.cn/client/message/link/open?token=...`。
+`resolve` / `snapshot` 仅接受 `https://applink.feishu.cn/client/message/link/open?token=...`。
 带 `previewId` 等额外参数的变体目前会被拒绝。服务不会从 Base64 字节猜测消息 ID，
 也不会通过搜索相似内容代替解析。返回的数字 ID 是网页版内部 ID，不能直接传给
 要求 `om_...` / `oc_...` 的 CLI 命令。
@@ -28,7 +28,41 @@
 
 `snapshot` 结果始终标记 `snapshotOnly=true`、`fullConversation=false`、
 `attachmentsDownloaded=false`。快照不代表当前聊天历史或原图。
-首版不下载图片和附件、不转换 OpenAPI ID、不提供任意网页 RPC 调用。
+快照路径不下载图片和附件、不转换 OpenAPI ID、不提供任意网页 RPC 调用。
+
+## 读取当前话题
+
+`conversation` 是默认操作，支持两类入口：
+
+- `/client/chat/open?openChatId=oc_...&position=N`：直接使用所选账号的官方 CLI / OAuth，
+  不读取网页会话。允许附带数字 `messageid` / `threadid`，但不将它们冒充 `om_` / `omt_`；
+  定位依据是明确的 `oc_` 和非负消息位置。
+- `/client/message/link/open?token=...`：网页协议读取内部会话 ID、位置、群名与消息时间；
+  官方 CLI 按群名发现候选，再通过固定的 `getchatid-byopenchatid` 接口反查候选。
+  **只有反查内部 ID 与链接内部 ID 逐字符相等，才允许读取该会话。** 群名不构成匹配证明。
+
+反查沿用飞书官方网页公开 RSA 公钥和临时 AES 参数；64 位内部 ID 始终按字符串比较。
+不执行下载的 JavaScript，不持久缓存映射，不记录 Cookie、明文消息或解密参数。
+网页接口和官方 CLI 使用同一个配置别名；配置者仍须保证两套身份属于同一人/组织。
+
+确认会话后，在官方 CLI 的有界消息窗口中按 `message_position` 精确定位，取得 `om_` 和
+`omt_`，随后显式分页读当前话题。复制快照自带的回复不混入当前结果。
+返回 `mapping.method`、`location`、`root`、`replies` 和 `pagination`；每次最多两页、100 条回复。
+`hasMore=true` 时，将 `nextReplyPageToken` 作为 `replyPageToken`，连同原 URL 和账号继续调用。
+续页的 `complete=false` 表示本次不包含前面的页；消费方应合并各页，不能把单页当成全话题。
+即使分页结束，也只证明可见记录已读完，不代表图片、表情、文件字节或撤回正文可读。
+
+检索最多三页候选、十次反查；主消息最多四页，每页 50 条。token 链接优先使用快照时间
+前后五分钟的窗口；直接 `oc_` 链接从最新记录向前查。窗口不足、候选不足或没有精确匹配
+都返回明确错误，不回退为正文相似匹配。负位置、多个选中消息暂不能读取当前话题，
+可显式使用 `snapshot` 保留原有功能。会话改名、单聊和权限变化可能导致候选不可发现。
+
+官方 CLI 的富文本解析失败占位会用同身份的单消息 OpenAPI 核对；已撤回的消息只保留
+撤回标记，不暴露快照旧正文。其他解析失败保留 `unavailable`，不会谎报已读完整。
+媒体仅保留官方 CLI 的资源引用。`fullConversation=false` 表示未读取整个群历史。
+
+整个读取设 90 秒期限，CLI 单次最多 20 秒；网页解析/快照共用 15 秒，单次反查最多
+15 秒及 64 KiB。结果最多 10 万字符。没有自动请求重试，不更换账号或 bot。
 
 ## 认证与启用
 
@@ -119,12 +153,13 @@ Node HTTP 调用，以及本地 MCP 端到端调用；单条主消息、单条�
 这里只保留通用能力结论，真实业务样本留在私有验收记录。
 
 未验证：单聊、各类撤回/权限变更、其他消息类型、完整媒体和附件、长期 Cookie
-有效期是否延长、真实 Cookie 轮换、跨运行区域和生产 Vercel 部署。部分防护依据
-协议字段实现，不等于这些场景全部实测。日常生产默认仍保持实验关闭。
+有效期是否延长、真实 Cookie 轮换、所有跨运行区域的组合。部分防护依据
+协议字段实现，不等于这些场景全部实测。新部署默认仍保持实验关闭。
 
 协议字段参照飞书官方 CDN 当前发布的
 [消息协议](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/5512.566de10d.js)、
 [消息实体与富文本](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/4869.fd49581c.js)、
 [消息链接实体](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/8340.bd0797b9.js)、
-[网页登录 SDK](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/index.18890997.js)。
+[网页登录 SDK](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/static/js/index.18890997.js)、
+[会话反查协议](https://sf1-scmcdn-cn.feishucdn.com/obj/feishu-static/ee/web-client-next/p/contents/web-framework/web-framework/27511c71.js)。
 这些实现证据不是官方兼容性承诺；网页版本变化可能使实验失效。
