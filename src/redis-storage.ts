@@ -33,6 +33,18 @@ redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[2], ARGV[1])
 return 1`;
 
+// Expiring receipts are independent CAS units. They deliberately have no
+// inventory entry: Redis removes them without a daily scan or stale index.
+export const REDIS_RECEIPT_CAS = `
+local current = redis.call('HGET', KEYS[1], 'revision')
+if (current or '') ~= ARGV[1] then return 0 end
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+if tonumber(ARGV[4]) <= now then return -1 end
+redis.call('HSET', KEYS[1], 'revision', ARGV[2], 'body', ARGV[3])
+redis.call('PEXPIREAT', KEYS[1], ARGV[4])
+return 1`;
+
 export interface RedisConfig { url: string; token: string; master: string }
 export interface RedisExecutor { eval(script: string, keys: string[], args: (string | number)[]): Promise<unknown> }
 const LIMIT = 1_048_576;
@@ -57,7 +69,7 @@ export class RedisBackend implements StorageBackend {
     });
   }
   private location(path: string) {
-    const match = /^generations\/([a-z0-9][a-z0-9-]{0,63})\/(state\/v1\/[a-z][a-z0-9-]{0,63}\.json)$/.exec(path);
+    const match = /^generations\/([a-z0-9][a-z0-9-]{0,63})\/(state\/(?:v1\/[a-z][a-z0-9-]{0,63}|v2\/mutations\/[A-Za-z0-9_-]{43})\.json)$/.exec(path);
     if (!match) throw new Error('Redis state requires a generation and a state document path');
     const prefix = `${REDIS_KEY_PREFIX}:{${match[1]}}:`;
     return { object: prefix + match[2], inventory: prefix + 'inventory', logical: match[2] };
@@ -105,11 +117,22 @@ export class RedisBackend implements StorageBackend {
       } catch { throw this.unavailable(); }
     });
   }
-  async compareExchange(path: string, expected: string | null, body: string): Promise<boolean> {
+  async compareExchange(path: string, expected: string | null, body: string, expiresAt?: number): Promise<boolean> {
     this.checkAvailable();
     const target = this.location(path);
     if (Buffer.byteLength(body) > LIMIT) throw new StateUnavailable('State capacity exceeded');
     const revision = randomUUID();
+    if (target.logical.startsWith('state/v2/mutations/')) {
+      if (!Number.isSafeInteger(expiresAt) || expiresAt! <= this.now() || expiresAt! > this.now() + 70 * 60_000) throw new StateUnavailable('Invalid receipt expiry');
+      this.pending.clear();
+      try {
+        const result = await this.eval(REDIS_RECEIPT_CAS, [target.object], [expected ?? '', revision, body, expiresAt!], 'writes');
+        if (result === -1) throw new StateUnavailable('Receipt expired before persistence');
+        if (result !== 0 && result !== 1) throw this.unavailable();
+        return result === 1;
+      } finally { this.pending.clear(); }
+    }
+    if (expiresAt !== undefined) throw new StateUnavailable('Expiry is only supported for write receipts');
     const args = [expected ?? '', revision, body, path];
     // The encrypted full document is retained for atomic mutations.
     // Only current, non-revoked Grants get small projections.
@@ -165,12 +188,12 @@ export class SplitStorageBackend implements StorageBackend {
     this.readGrant = (path, id) => state.readGrant(path, id);
   }
   private select(path: string) {
-    if (/^generations\/[^/]+\/state\/v1\//.test(path)) return this.state;
+    if (/^generations\/[^/]+\/state\/(?:v1\/|v2\/mutations\/)/.test(path)) return this.state;
     if (/^generations\/[^/]+\/temporary-uploads\/v1\//.test(path)) return this.files;
     throw new Error('Unsupported storage path');
   }
   read(path: string) { return this.select(path).read(path); }
-  compareExchange(path: string, expected: string | null, body: string) { return this.select(path).compareExchange(path, expected, body); }
+  compareExchange(path: string, expected: string | null, body: string, expiresAt?: number) { return this.select(path).compareExchange(path, expected, body, expiresAt); }
   async remove(paths: string[]) {
     for (const backend of [this.state, this.files]) await backend.remove(paths.filter(path => this.select(path) === backend));
   }

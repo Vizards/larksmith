@@ -25,7 +25,7 @@ export class NamespacedBackend implements StorageBackend {
     return this.prefix + path;
   }
   read(path: string) { return this.backend.read(this.path(path)); }
-  compareExchange(path: string, expected: string | null, body: string) { return this.backend.compareExchange(this.path(path), expected, body); }
+  compareExchange(path: string, expected: string | null, body: string, expiresAt?: number) { return this.backend.compareExchange(this.path(path), expected, body, expiresAt); }
   remove(paths: string[]) { return this.backend.remove(paths.map(path => this.path(path))); }
   async list(prefix: string) {
     const keys = await this.backend.list(prefix ? this.path(prefix) : this.prefix);

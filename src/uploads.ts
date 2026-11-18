@@ -40,7 +40,7 @@ export class Uploads {
     return value;
   }
   public(id, record) {
-    return { uploadId: id, account: record.account, identity: 'user', name: record.target.name, bytes: record.bytes, sha256: record.sha256,
+    return { uploadId: id, requestId: record.requestId, account: record.account, identity: 'user', name: record.target.name, bytes: record.bytes, sha256: record.sha256,
       chunkBytes: CHUNK_BYTES, chunks: Math.ceil(record.bytes / CHUNK_BYTES), stagedIndices: Object.keys(record.parts).map(Number),
       expiresAt: new Date(record.expires).toISOString(), phase: record.result ? 'done' : 'staging', ...(record.result ? { result: record.result } : {}) };
   }

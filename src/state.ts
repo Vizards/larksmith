@@ -21,7 +21,7 @@ export interface StateValue { v: number; records: Record<string, any>; [key: str
 export interface StoredValue { etag: string; body: string }
 export interface StateBackend {
   read(path: string): Promise<StoredValue | null>;
-  compareExchange(path: string, expected: string | null, body: string): Promise<boolean>;
+  compareExchange(path: string, expected: string | null, body: string, expiresAt?: number): Promise<boolean>;
   // Optional atomically maintained, encrypted OAuth Grant projection.
   readGrant?(path: string, recordKey: string): Promise<string | null>;
 }

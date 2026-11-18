@@ -9,7 +9,7 @@ import { PRODUCT_NAME, PRODUCT_VERSION } from './product.ts';
 import { isStateFailure, STATE_RETRY_SECONDS, StateDocument, trackStateUsage } from './state.ts';
 import { makeOAuth, protectedResourceMetadata, securityHeaders } from './oauth.ts';
 import { FeishuAccounts } from './feishu.ts';
-import { Mutations } from './mutations.ts';
+import { Mutations, validateWriteRequest, writeRequest, writeErrorDetails } from './mutations.ts';
 import { Uploads } from './uploads.ts';
 import { MessageLinks, MessageLinkError } from './message-links.ts';
 import { readMessageImage, validateMessageImage } from './message-images.ts';
@@ -137,7 +137,7 @@ export function makeApp(config) {
           description: 'Read bridge status and the available user-account connections. Does not connect or change an upstream account.',
           inputSchema: z.object({}),
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-        }, async () => ({ content: [{ type: 'text', text: JSON.stringify({ bridge: PRODUCT_NAME, identityMode: 'user-only', cliVersion: catalog().cliVersion, capabilities: { catalog: 'lark_cli_catalog', upload: { nativeFileInput: true, inlineBytes: 262144, stagedBytes: 33554432, stagingTtlHours: 24, destination: 'Drive', documentAttachmentInsertion: false }, writeReceiptRetentionDays: 30 }, accounts: await Promise.all(accountNames.map(async account => {
+        }, async () => ({ content: [{ type: 'text', text: JSON.stringify({ bridge: PRODUCT_NAME, identityMode: 'user-only', cliVersion: catalog().cliVersion, capabilities: { catalog: 'lark_cli_catalog', upload: { nativeFileInput: true, inlineBytes: 262144, stagedBytes: 33554432, stagingTtlHours: 24, destination: 'Drive', documentAttachmentInsertion: false }, writeReceipts: { protocol: 'w2', windowMinutes: 60, storageTtlMinutes: 65, globalRecordLimit: null, requestSource: 'lark_cli_catalog.writeRequest' } }, accounts: await Promise.all(accountNames.map(async account => {
           try { return { ...await accounts.status(account), ...(webSessions ? { webSession: await webSessions.status(account) } : {}) }; } catch (error) { return { account, connected: false, error: error.code || 'state_unavailable' }; }
         })) }) }] }));
         server.registerTool('lark_connect_account', {
@@ -260,19 +260,19 @@ export function makeApp(config) {
           inputSchema: z.object({ command: z.array(z.string().max(128)).max(5).optional(), query: z.string().max(128).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(50).optional() }),
           annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
         }, async ({ command, query, offset, limit }) => {
-          try { return { content: [{ type: 'text', text: JSON.stringify(catalog({ command, query, offset, limit })) }] }; }
+          try { return { content: [{ type: 'text', text: JSON.stringify({ ...catalog({ command, query, offset, limit }), writeRequest: writeRequest() }) }] }; }
           catch (error) { return { isError: true, content: [{ type: 'text', text: error.code || 'catalog_failed' }] }; }
         });
         const runCommand = (mode: 'read' | 'write') => async ({ account, command, parameters = {}, requestId, highRiskConfirmed = false }: { account: string; command: string[]; parameters?: Record<string, any>; requestId?: string; highRiskConfirmed?: boolean }): Promise<CallToolResult> => {
           if (mode === 'write' && !auth.scopes.includes('lark:write')) return { isError: true, content: [{ type: 'text', text: 'insufficient_scope' }] };
           try {
             const prepared = commandArguments(command, parameters, mode, highRiskConfirmed);
-            if (mode === 'write') mutations.key(auth.clientId, account, requestId);
+            if (mode === 'write') { validateWriteRequest(requestId!); mutations.key(auth.clientId, account, requestId); }
             const token = await accounts.userToken(account);
             const work = () => executeCommand(account, token, prepared);
             const result = mode === 'read' ? await work() : await mutations.run(auth.clientId, account, requestId!, { command, parameters: prepared.parameters }, work);
             return { isError: !result.ok, content: [{ type: 'text', text: JSON.stringify(result) }] };
-          } catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ account, error: error.code || 'cli_command_failed', ...(error.fields ? { fields: error.fields } : {}), instruction: mode === 'write' ? 'Retain requestId. If a write was dispatched or timed out, inspect the target before using a new ID.' : 'Use lark_cli_catalog for enabled commands and parameter schemas.' }) }] }; }
+          } catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ account, error: error.code || 'cli_command_failed', ...(error.fields ? { fields: error.fields } : {}), ...(mode === 'write' ? writeErrorDetails(error) : { instruction: 'Use lark_cli_catalog for enabled commands and parameter schemas.' }) }) }] }; }
         };
         const commandSchema = { account: accountSchema, command: z.array(z.string().max(128)).min(2).max(5), parameters: z.record(z.string(), z.unknown()).default({}) };
         server.registerTool('lark_cli_read', {
@@ -282,13 +282,13 @@ export function makeApp(config) {
         }, runCommand('read'));
         server.registerTool('lark_cli_write', {
           title: 'Execute an official Lark CLI business write as a selected user',
-          description: 'Use lark_cli_catalog for exact command schemas and XML guide. Dispatches business commands classified write or high-risk-write by the official CLI. High-risk commands additionally require highRiskConfirmed=true only after explicit user authorization. Requires intent to mutate that resource; read current content before editing and verify after. requestId must identify this exact action (8-128 letters/digits/underscore/hyphen). Reuse it for transport retries; completed results are retained 30 days. An uncertain upstream write is fenced for reconciliation. Sending messages, changing permissions or other consequential actions require explicit user intent. This is not an arbitrary shell.',
+          description: 'Use lark_cli_catalog for exact command schemas and XML guide. Dispatches business commands classified write or high-risk-write by the official CLI. High-risk commands additionally require highRiskConfirmed=true only after explicit user authorization. Requires intent to mutate that resource; read current content before editing and verify after. Use a fresh catalog writeRequest.requestId for each distinct action; retain the exact ID for retries. Its original 60-minute window never slides. Expired or legacy IDs are rejected before dispatch; inspect the target before starting a replacement. An uncertain upstream write is fenced for reconciliation. Sending messages, changing permissions or other consequential actions require explicit user intent. This is not an arbitrary shell.',
           inputSchema: z.object({ ...commandSchema, requestId: z.string().min(8).max(128), highRiskConfirmed: z.boolean().default(false) }),
           annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         }, runCommand('write'));
         server.registerTool('lark_files_upload', {
           title: 'Upload an actual file to the selected user Feishu Drive',
-          description: 'Create a NEW Drive file without overwriting existing files. Prefer action=upload with file for actual ChatGPT attachments or generated files up to 32 MiB. If ChatGPT exposes file as a STRING, pass the actual client-local file path: its fileParams adapter converts it into the signed file object for this server. Otherwise file is the native download_url/file_id object. Do not invent URLs. Alternatively use base64 data up to 256 KiB. Larger local files use begin(name,bytes,sha256,requestId), chunk(uploadId,index,data) in exact 256 KiB pieces (last may be smaller), then commit(uploadId); status/cancel inspect or discard staging. folderToken omitted means the selected user Drive root. Preserve requestId for retries; hashes are checked and returned. Private encrypted staging expires in 24h and the daily job cleans it. Upstream account limits may be lower. This uploads a Drive file; inserting it into Docx, IM, mail or Base is a separate media workflow.',
+          description: 'Create a NEW Drive file without overwriting existing files. Prefer action=upload with file for actual ChatGPT attachments or generated files up to 32 MiB. If ChatGPT exposes file as a STRING, pass the actual client-local file path: its fileParams adapter converts it into the signed file object for this server. Otherwise file is the native download_url/file_id object. Do not invent URLs. Alternatively use base64 data up to 256 KiB. Larger local files use begin(name,bytes,sha256,requestId), chunk(uploadId,index,data) in exact 256 KiB pieces (last may be smaller), then commit(uploadId); status/cancel inspect or discard staging. folderToken omitted means the selected user Drive root. Get a fresh writeRequest.requestId from lark_cli_catalog for each upload; finish within its 60-minute window and preserve it for retries. Expired or legacy requests require target reconciliation before replacement. Private staging expires in 24h and completed manifests remain readable until then; this does not extend the write deadline. Upstream account limits may be lower. Inserting a Drive file into Docx, IM, mail or Base is a separate media workflow.',
           inputSchema: z.object({ account: accountSchema, action: z.enum(['upload', 'begin', 'chunk', 'commit', 'status', 'cancel']).default('upload'),
             requestId: z.string().min(8).max(128).optional(), name: z.string().max(240).optional(), folderToken: z.string().max(256).optional(),
             file: z.object({ download_url: z.string().max(16384), file_id: z.string().max(512), mime_type: z.string().max(256).optional(), file_name: z.string().max(240).optional() }).strict().optional(),
@@ -298,6 +298,11 @@ export function makeApp(config) {
         }, async ({ account, action, ...input }) => {
           if (!auth.scopes.includes('lark:write')) return { isError: true, content: [{ type: 'text', text: 'insufficient_scope' }] };
           try {
+            if (action === 'upload' || action === 'begin') validateWriteRequest(input.requestId!);
+            if (action === 'commit') {
+              const staged = await uploads.status(auth.clientId, account, input.uploadId);
+              if (!staged.result) validateWriteRequest(staged.requestId);
+            }
             const getToken = () => accounts.userToken(account);
             const result = action === 'begin' ? await uploads.begin(auth.clientId, account, input) :
               action === 'chunk' ? await uploads.chunk(auth.clientId, account, input) :
@@ -306,7 +311,7 @@ export function makeApp(config) {
               action === 'cancel' ? await uploads.cancel(auth.clientId, account, input.uploadId) :
               await uploads.single(auth.clientId, account, input, getToken);
             return { isError: result.ok === false, content: [{ type: 'text', text: JSON.stringify(result) }] };
-          } catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ account, error: error.code || 'file_upload_failed', instruction: 'Retain requestId/uploadId. For an uncertain write, inspect the destination before creating a replacement. Do not switch accounts or request broad reauthorization for a file-size/resource-access error.' }) }] }; }
+          } catch (error) { return { isError: true, content: [{ type: 'text', text: JSON.stringify({ account, error: error.code || 'file_upload_failed', ...writeErrorDetails(error) }) }] }; }
         });
         const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, maxRequestBodySize: 512 * 1024 });
         res.on('close', () => { transport.close().catch(() => {}); server.close().catch(() => {}); });
