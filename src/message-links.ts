@@ -308,7 +308,10 @@ export class MessageLinks {
       const selected = copied.messages.find(message => message.messageId === copied.selectedMessageIds[0]);
       return { account, experimental: true, operation, source: 'web-link-and-official-cli', identity: 'configured-web-session-and-user-oauth',
         ...await readConversation({ chatId: location.chatId, chatName: copied.chatName, position: location.position,
-          createTimeSeconds: selected && 'createTimeSeconds' in selected ? selected.createTimeSeconds : undefined }, {
+          // A copied reply resolves to its root's chat position, but has the
+          // reply's timestamp. Only use the time hint when it belongs to root.
+          createTimeSeconds: selected && 'position' in selected && selected.position === String(location.position) && 'createTimeSeconds' in selected
+            ? selected.createTimeSeconds : undefined }, {
           deadline, official: this.options.official!(account), reverse: async openChatId => {
             try { return await reverseChatId(openChatId, session.cookie, AbortSignal.timeout(Math.max(1, Math.min(15000, deadline - Date.now()))), this.options.fetcher); }
             catch (error) { if (error instanceof MessageLinkError && error.code === 'web_session_expired') await this.options.rejected?.(account, session); throw error; }

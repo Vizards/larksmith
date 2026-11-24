@@ -29,7 +29,8 @@ larksmith 通过远程 MCP 提供官方飞书 CLI 能力。Agent 按任务选择
 ```
 
 目录由 CLI schema 和官方 help 生成。固定版本 1.0.98 包含 784 项目录条目，
-669 项符合命令级静态调度条件；其余 102 项属于运行流程例外，13 项仅支持 bot。
+668 项符合命令级静态调度条件；其余 102 项属于运行流程例外，13 项仅支持 bot，
+1 项聊天资源下载由专用文件/图片工具承接。
 各条目的 `executable`、参数说明和原因字段指导具体调用。实际调用使用所选账号的
 user scopes 和目标资源权限；业务验证以具体操作的测试结果为准。
 
@@ -71,7 +72,27 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 支持 PNG、JPEG、GIF、WebP，每张最多 2 MiB；不自动缩图、不保证动画帧展示，暂不
 读取消息表情、视频或通用附件。链接解析与图片读取是独立步骤，不自动批量下载整段聊天。
 
-`lark_files_read` 读取 Drive 文件或文档附件，
+`lark_files_read` 读取 Drive 文件、文档附件或聊天文件（包括话题回复）。
+聊天文件传 `source="message"`、官方 `om_` messageId，并将同一消息的 file_key
+放入 fileToken；不能将 IM file_key 当作 Drive 或 Docx token。先用消息读取或
+`lark_message_link_read` 定位，再读取文件：
+
+```json
+{
+  "account": "team-a",
+  "source": "message",
+  "messageId": "om_MESSAGE_ID",
+  "fileToken": "file_RESOURCE_KEY",
+  "operation": "text"
+}
+```
+
+工具先核验当前消息可见且未撤回、资源 key 确实属于消息，再下载实际字节。
+支持 file/audio/media 消息和 post 中明确的 file 元素；合并转发容器、文件夹、贴纸
+尚不支持。返回原始字节不等于解析 PDF、Office 或转录音视频；这些交给客户端处理。
+`text` 仅适用于 UTF-8 文本；二进制使用 `chunk` 或 `resource`。
+通用命令不再接受 `download-resources=true`，避免仅返回马上失效的服务器临时路径。
+
 `lark_files_upload` 创建 Drive 文件，返回文件 token、URL、字节数和 SHA-256。
 
 | 方式 | 用法 |
@@ -116,7 +137,7 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 | apps、event、Drive 同步、`docs/+script` | 这些流程需要持久工作目录或长期执行，应在适合的 CLI 环境中运行。 |
 | 身份与风险元数据 | 调度选择具有 user 身份和明确风险等级的命令。 |
 | 表格与文档快捷工具 | 提供明确的表格范围、文档读取模式和图片输出。 |
-| 聊天图片传输 | `im/+messages-resources-download` 被上游标为 write，因为会写本地文件；此适配固定 type=image、临时输出路径和 user 身份，仅执行远程读取，并以 MCP image 返回真实字节。完成或失败后清理临时目录。它不开放任意路径或更改通用命令的风险分类。 |
+| 聊天图片和文件传输 | `im/+messages-resources-download` 被上游标为 write，因为会写本地文件；专用工具固定 type=image 或 file、临时输出路径和 user 身份，仅执行远程读取，并返回真实 MCP 内容。完成或失败后清理临时目录。目录将该命令标为不可直接派发，消息列表的下载参数也引导到专用工具，不开放任意路径或修改上游风险分类。 |
 | 复制消息链接（实验，默认关闭） | 公共 CLI 尚无 token 链接解析入口；使用网页只读 RPC 解析定位、文本快照；读取当前话题时先反查候选会话并精确比对内部 ID，再接回官方 CLI。明确的 oc_ + 非负 position 链接直接使用官方读取，分页和失败边界不隐藏。独立网页会话经身份核验和每日心跳维护；尚不能保证长期续期，也不下载媒体。见[实验范围](message-links-experiment.md)。 |
 
 Base 记录读取在上游默认生成 NDJSON 文件；桥接通用调度显式指定 JSON，返回内联数据，

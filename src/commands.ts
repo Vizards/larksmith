@@ -15,6 +15,7 @@ const reserved = new Set(['as', 'profile', 'help', 'version', 'format', 'output'
 const reservedFlags = (entry: CommandMetadata) => new Set([...reserved, ...(entry.flags.json?.type === 'bool' ? ['json'] : [])]);
 
 export const exceptions = [
+  { scope: 'im/+messages-resources-download and IM download-resources flags', reason: 'Remote temporary paths are not client files. Use lark_files_read(source=message, messageId, fileToken=file_key) for file bytes or lark_messages_image for images. Generic dispatch does not capture downloaded resources.' },
   { scope: 'existing lark_sheets_* / lark_docs_read / lark_api_read convenience tools', reason: 'Compatibility with the already-accepted clients and bounded sheet ranges. New ordinary business capabilities use generic dispatch; no new per-command facade is required.' },
   { scope: 'auth/config/profile/update/doctor/whoami', reason: 'Bridge owns the two fixed user identities, credential renewal and pinned binary. Management commands are outside the business catalog.' },
   { scope: 'apps/**, event/**, drive/+pull,+push,+sync,+status, docs/+script', reason: 'These workflows require deployment toolchains, durable local working trees, interactive input or long-lived processes. A stateless Vercel invocation does not provide that lifecycle.' },
@@ -26,6 +27,7 @@ export const exceptions = [
 ];
 
 export function unavailable(entry: CommandMetadata): string | null {
+  if (entry.id === 'im/+messages-resources-download') return 'message_resources_require_file_or_image_tool';
   if (/^(?:apps|event)\//.test(entry.id) || /^(?:drive\/\+(?:pull|push|sync|status)|docs\/\+script)$/.test(entry.id)) return 'requires_local_or_persistent_runtime';
   if (!entry.risk) return 'upstream_risk_unannotated';
   if (entry.authorization?.access_tokens && !entry.authorization.access_tokens.includes('user')) return 'upstream_user_identity_not_supported';
@@ -42,6 +44,7 @@ export function catalog({ command, query = '', offset = 0, limit = 30 }: { comma
     const entry = entries.get(command.join('/'));
     if (!entry) throw failure('unknown_command_use_catalog_search');
     return { cliVersion: inventory.version, ...entry, executable: !unavailable(entry), unavailableReason: unavailable(entry),
+      ...(entry.flags['download-resources'] ? { parameterLimits: { 'download-resources': 'false only; use lark_files_read(source=message) or lark_messages_image for actual bytes' } } : {}),
       bridgeReservedFlags: [...reservedFlags(entry)], exceptions, usage: 'Pass flags as an object using the exact --flag name without leading dashes. Scalars pass as one argv value; objects become inline JSON; arrays repeat only list flags, otherwise become JSON. A business --json payload flag is distinct from the reserved boolean --json output switch. Read official Related skills through lark_cli_help(skill="lark-doc/references/lark-doc-xml.md"), for example. The upstream CLI validates business semantics. Read/write tools are separated by upstream risk. Do not copy an agent-local @path into a remote command.' };
   }
   const matched = inventory.entries.filter(entry => !query || `${entry.id} ${entry.description}`.toLowerCase().includes(query.toLowerCase()));
@@ -85,6 +88,7 @@ export function commandArguments(command: string[], flags: Record<string, FlagVa
   let content: string | undefined;
   const blocked = reservedFlags(entry);
   for (const [name, value] of Object.entries(flags)) {
+    if (name === 'download-resources' && value !== false) throw failure('message_resources_require_file_or_image_tool');
     if (!/^[a-z][a-z0-9-]*$/.test(name) || !entry.flags[name] || blocked.has(name)) throw failure('unknown_or_bridge_reserved_flag_use_catalog');
     if (/(?:^|-)(?:file|files|filepath|path|directory|dir|output|output-dir|input-file|attachment-path)(?:$|-)/.test(name) && !/(?:token|id|name|type|size|version)/.test(name)) throw failure('file_transport_requires_upload_or_read_tool');
     if (/^(?:optional\.?\s*|required\.?\s*)?(?:regular\s+)?(?:local (?:image |file )?path|local file path|attachment file path)/i.test(entry.flags[name].description) || /(?:cwd-relative local path|file_path.*relative|clipboard)/i.test(entry.flags[name].description)) throw failure('file_transport_requires_upload_or_read_tool');
