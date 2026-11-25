@@ -2,14 +2,24 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StateDocument, deriveKey, seal, unseal, type StorageBackend } from './state.ts';
 import type { Mutations } from './mutations.ts';
-import { invoke } from './cli.ts';
+import { invoke, imageMimeType } from './cli.ts';
 import { digest, failure } from './mutations.ts';
 import { CHUNK_BYTES, MAX_UPLOAD_BYTES, decodeChunk, downloadInput } from './file-input.ts';
 
 const tokenPattern = /^[A-Za-z0-9_-]{1,256}$/;
-export function uploadTarget({ name, folderToken }) {
+export const MAX_IM_IMAGE_BYTES = 10_000_000;
+export interface UploadTargetInput { name?: string; folderToken?: string; destination?: 'drive' | 'im_image'; imageType?: 'avatar' | 'message' }
+export function uploadTarget({ name, folderToken, destination = 'drive', imageType }: UploadTargetInput) {
   if (typeof name !== 'string' || !name.trim() || Buffer.byteLength(name) > 240 || /[\x00-\x1f\x7f/\\]/.test(name) || name === '.' || name === '..') throw failure('invalid_upload_name');
+  if (destination !== 'drive' && destination !== 'im_image') throw failure('invalid_upload_destination');
+  if (destination === 'im_image') {
+    if (folderToken !== undefined) throw failure('im_image_does_not_accept_drive_folder');
+    if (imageType !== 'avatar' && imageType !== 'message') throw failure('im_image_requires_avatar_or_message_type');
+    return { name, destination, imageType };
+  }
+  if (imageType !== undefined) throw failure('image_type_requires_im_image_destination');
   if (folderToken !== undefined && !tokenPattern.test(folderToken)) throw failure('invalid_folder_token');
+  // Preserve the original Drive fingerprint for in-flight uploads and retries.
   return { name, ...(folderToken ? { folderToken } : {}) };
 }
 
@@ -41,13 +51,15 @@ export class Uploads {
   }
   public(id, record) {
     return { uploadId: id, requestId: record.requestId, account: record.account, identity: 'user', name: record.target.name, bytes: record.bytes, sha256: record.sha256,
+      destination: record.target.destination || 'drive', ...(record.target.imageType ? { imageType: record.target.imageType } : {}),
       chunkBytes: CHUNK_BYTES, chunks: Math.ceil(record.bytes / CHUNK_BYTES), stagedIndices: Object.keys(record.parts).map(Number),
       expiresAt: new Date(record.expires).toISOString(), phase: record.result ? 'done' : 'staging', ...(record.result ? { result: record.result } : {}) };
   }
-  async begin(clientId, account, { requestId, name, folderToken, bytes, sha256 }) {
-    const target = uploadTarget({ name, folderToken });
+  async begin(clientId, account, { requestId, name, folderToken, destination, imageType, bytes, sha256 }) {
+    const target = uploadTarget({ name, folderToken, destination, imageType });
     this.mutations.key(clientId, account, requestId);
     if (!Number.isInteger(bytes) || bytes < 1 || bytes > MAX_UPLOAD_BYTES) throw failure('upload_size_must_be_1_byte_to_32_mib');
+    if (target.destination === 'im_image' && bytes > MAX_IM_IMAGE_BYTES) throw failure('im_image_exceeds_10_mb_limit');
     if (!/^[a-f0-9]{64}$/.test(sha256 || '')) throw failure('upload_sha256_required');
     const id = this.state.identifier(JSON.stringify([clientId, account, requestId]));
     const fingerprint = digest(JSON.stringify({ target, bytes, sha256 }));
@@ -107,13 +119,24 @@ export class Uploads {
   }
   async upload(clientId, account, requestId, target, bytes, getToken) {
     const sha256 = digest(bytes);
+    const imImage = target.destination === 'im_image';
+    if (imImage && bytes.length > MAX_IM_IMAGE_BYTES) throw failure('im_image_exceeds_10_mb_limit');
+    // Never trust the supplied extension/MIME. Only these image formats are
+    // currently transported; upstream remains authoritative for dimensions.
+    const mime = imImage ? imageMimeType(bytes) : undefined;
+    const extension = mime ? ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })[mime] : 'bin';
+    const filename = `input.${extension}`;
     // Obtain/refresh credentials before reserving the irreversible write.
     const token = await getToken();
-    return this.mutations.run(clientId, account, requestId, { operation: 'drive_upload', target, bytes: bytes.length, sha256 }, async () => {
-      const args = ['drive', '+upload', '--file=./input.bin', `--name=${target.name}`, ...(target.folderToken ? [`--folder-token=${target.folderToken}`] : []), '--as=user', '--json'];
-      const result = await this.run(args, token, { timeout: 120_000, prepare: scratch => writeFile(join(scratch, 'input.bin'), bytes, { mode: 0o600 }) });
+    return this.mutations.run(clientId, account, requestId, { operation: imImage ? 'im_image_upload' : 'drive_upload', target, bytes: bytes.length, sha256 }, async () => {
+      const args = imImage ? ['im', 'images', 'create', `--data=${JSON.stringify({ image_type: target.imageType })}`, `--file=image=./${filename}`, '--as=user', '--json'] :
+        ['drive', '+upload', `--file=./${filename}`, `--name=${target.name}`, ...(target.folderToken ? [`--folder-token=${target.folderToken}`] : []), '--as=user', '--json'];
+      const result = await this.run(args, token, { timeout: 120_000, prepare: scratch => writeFile(join(scratch, filename), bytes, { mode: 0o600 }) });
       const output = JSON.parse(result.output);
+      const imageKey = imImage && result.ok && output.ok !== false ? output.data?.image_key : undefined;
+      if (imImage && result.ok && output.ok !== false && (typeof imageKey !== 'string' || !tokenPattern.test(imageKey))) throw failure('image_upload_result_missing_key_reconcile_before_retry');
       return { ok: result.ok && output.ok !== false, account, identity: 'user', name: target.name, bytes: bytes.length, sha256, result: output,
+        destination: imImage ? 'im_image' : 'drive', ...(imImage ? { imageType: target.imageType, ...(imageKey ? { imageKey, usage: target.imageType === 'avatar' ? 'Set im/chats/update data.avatar to this imageKey. Upload alone does not change a group.' : 'Use this imageKey in an explicitly authorized IM message. Upload alone does not send a message.' } : {}) } : {}),
         ...(!result.ok || output.ok === false ? { instruction: 'Do not assume the upload was rolled back. Inspect the destination before using a new requestId.' } : {}) };
     });
   }
@@ -126,11 +149,11 @@ export class Uploads {
     await this.removeParts(uploadId, entry).catch(() => {}); // Cron retries cleanup if interrupted.
     return { ...result, inputRoute: 'chunked' };
   }
-  async single(clientId, account, { requestId, name, folderToken, file, data, sha256 }, getToken) {
-    const target = uploadTarget({ name: name || file?.file_name, folderToken });
+  async single(clientId, account, { requestId, name, folderToken, destination, imageType, file, data, sha256 }, getToken) {
+    const target = uploadTarget({ name: name || file?.file_name, folderToken, destination, imageType });
     this.mutations.key(clientId, account, requestId);
     if (Boolean(file) === Boolean(data)) throw failure('provide_one_native_file_or_base64_data');
-    const bytes = file ? await this.download(file.download_url) : decodeChunk(data);
+    const bytes = file ? await this.download(file.download_url, { maxBytes: target.destination === 'im_image' ? MAX_IM_IMAGE_BYTES : MAX_UPLOAD_BYTES }) : decodeChunk(data);
     if (sha256 && digest(bytes) !== sha256) throw failure('upload_sha256_mismatch');
     const result = await this.upload(clientId, account, requestId, target, bytes, getToken);
     return { ...result, inputRoute: file ? 'native_file' : 'base64' };
@@ -143,7 +166,7 @@ export class Uploads {
     const entry = this.record(await this.state.read(), id, clientId, account);
     await this.state.update(doc => { this.record(doc, id, clientId, account).expires = this.now() - 1; });
     await this.removeParts(id, entry);
-    return { uploadId: id, cancelled: true, instruction: 'Staging cancelled. Any already-created Feishu file is retained.' };
+    return { uploadId: id, cancelled: true, instruction: 'Staging cancelled. Any already-created Feishu file or image resource is retained; cancel does not undo an upload or group update.' };
   }
   async cleanup() {
     const saved = await this.state.read();
