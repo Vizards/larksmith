@@ -14,6 +14,44 @@ const entries = new Map(inventory.entries.map(entry => [entry.id, entry]));
 const reserved = new Set(['as', 'profile', 'help', 'version', 'format', 'output', 'jq', 'yes', 'page-all', 'page-limit', 'page-delay']);
 const reservedFlags = (entry: CommandMetadata) => new Set([...reserved, ...(entry.flags.json?.type === 'bool' ? ['json'] : [])]);
 
+// These are routing hints, not replacements for upstream schemas or business
+// implementations. Keep alternatives explicit: a similarly named command may
+// accept different fields or require a different identity.
+const routes: Record<string, { instruction: string; alternatives?: unknown[] }> = {
+  'im/chats/create': {
+    instruction: 'This raw command is bot-only in the pinned CLI metadata. To create a group as the configured user, discover im/+chat-create. Its flags differ and do not include avatar; do not switch to bot.',
+    alternatives: [{ tool: 'lark_cli_catalog', command: ['im', '+chat-create'], scope: 'User group creation with the shortcut flags, not the raw JSON body' }],
+  },
+  'im/+chat-create': {
+    instruction: 'Creates a group as the configured user. No avatar flag. For a custom avatar, upload with lark_files_upload(destination=im_image, imageType=avatar), then use im/chats/update data.avatar=image_key. Uploading alone does not change a group.',
+  },
+  'im/+chat-update': {
+    instruction: 'This shortcut changes only name/description. For avatar and other supported group settings, discover im/chats/update; avatar requires an IM image_key uploaded with imageType=avatar, not a Drive file_token.',
+    alternatives: [{ tool: 'lark_cli_catalog', command: ['im', 'chats', 'update'], scope: 'Additional group settings, subject to the raw schema and user permissions' }],
+  },
+  'im/images/create': {
+    instruction: 'The CLI requires a server-local image file. Transfer actual bytes with lark_files_upload(destination=im_image, imageType=avatar|message); it returns an IM image_key. Do not pass client paths or Drive tokens here.',
+    alternatives: [{ tool: 'lark_files_upload', parameters: { destination: 'im_image' }, scope: 'Upload image bytes; choose imageType=avatar or message explicitly' }],
+  },
+  'im/+messages-resources-download': {
+    instruction: 'Use lark_messages_image for image bytes or lark_files_read(source=message) for file bytes; a server-local download path is not a client attachment.',
+    alternatives: [{ tool: 'lark_messages_image' }, { tool: 'lark_files_read', parameters: { source: 'message' } }],
+  },
+};
+
+function localFileFlag(name: string, description: string): boolean {
+  return /(?:^|-)(?:file|files|filepath|path|directory|dir|output|output-dir|input-file|attachment-path)(?:$|-)/.test(name) && !/(?:token|id|name|type|size|version)/.test(name) ||
+    /^(?:optional\.?\s*|required\.?\s*)?(?:regular\s+)?(?:local (?:image |file )?path|local file path|attachment file path)/i.test(description) || /(?:cwd-relative local path|file_path.*relative|clipboard)/i.test(description);
+}
+
+function requiredFileInput(entry: CommandMetadata): boolean {
+  const schema = entry.schema as { required?: string[]; properties?: Record<string, { carrier?: string }> } | undefined;
+  return Boolean(schema?.required?.some(key => {
+    const flag = schema.properties?.[key]?.carrier?.replace(/^--/, '');
+    return flag && localFileFlag(flag, entry.flags[flag]?.description || '');
+  }));
+}
+
 export const exceptions = [
   { scope: 'im/+messages-resources-download and IM download-resources flags', reason: 'Remote temporary paths are not client files. Use lark_files_read(source=message, messageId, fileToken=file_key) for file bytes or lark_messages_image for images. Generic dispatch does not capture downloaded resources.' },
   { scope: 'existing lark_sheets_* / lark_docs_read / lark_api_read convenience tools', reason: 'Compatibility with the already-accepted clients and bounded sheet ranges. New ordinary business capabilities use generic dispatch; no new per-command facade is required.' },
@@ -36,22 +74,33 @@ export function unavailable(entry: CommandMetadata): string | null {
   // contract; do not advertise bot-only shortcuts as executable for a user.
   const identities = /^identity type: ((?:user|bot)(?: \| (?:user|bot))*)$/.exec(entry.flags.as.description)?.[1].split(' | ');
   if (identities && !identities.includes('user')) return 'upstream_user_identity_not_supported';
+  if (requiredFileInput(entry)) return 'required_file_input_needs_specialized_transport';
   return null;
 }
 
-export function catalog({ command, query = '', offset = 0, limit = 30 }: { command?: string[]; query?: string; offset?: number; limit?: number } = {}) {
+export function commandGuidance(command: string[]) { return routes[command.join('/')]; }
+
+export function catalog({ command, query = '', offset = 0, limit = 30, includeUnavailable = false }: { command?: string[]; query?: string; offset?: number; limit?: number; includeUnavailable?: boolean } = {}) {
   if (command?.length) {
     const entry = entries.get(command.join('/'));
     if (!entry) throw failure('unknown_command_use_catalog_search');
-    return { cliVersion: inventory.version, ...entry, executable: !unavailable(entry), unavailableReason: unavailable(entry),
+    const reason = unavailable(entry);
+    if (reason && !includeUnavailable) return { cliVersion: inventory.version, id: entry.id, command: entry.command, description: entry.description,
+      executable: false, unavailableReason: reason, ...routes[entry.id],
+      usage: 'Do not execute this command or change identity. Follow a listed alternative within its scope, or search the executable catalog. includeUnavailable=true exposes upstream schemas only for diagnostics.' };
+    return { cliVersion: inventory.version, ...entry, executable: !reason, unavailableReason: reason, ...routes[entry.id],
+      blockedParameters: Object.entries(entry.flags).filter(([name, flag]) => !reservedFlags(entry).has(name) && localFileFlag(name, flag.description)).map(([name]) => name),
       ...(entry.flags['download-resources'] ? { parameterLimits: { 'download-resources': 'false only; use lark_files_read(source=message) or lark_messages_image for actual bytes' } } : {}),
       bridgeReservedFlags: [...reservedFlags(entry)], exceptions, usage: 'Pass flags as an object using the exact --flag name without leading dashes. Scalars pass as one argv value; objects become inline JSON; arrays repeat only list flags, otherwise become JSON. A business --json payload flag is distinct from the reserved boolean --json output switch. Read official Related skills through lark_cli_help(skill="lark-doc/references/lark-doc-xml.md"), for example. The upstream CLI validates business semantics. Read/write tools are separated by upstream risk. Do not copy an agent-local @path into a remote command.' };
   }
-  const matched = inventory.entries.filter(entry => !query || `${entry.id} ${entry.description}`.toLowerCase().includes(query.toLowerCase()));
+  const candidates = inventory.entries.filter(entry => !query || `${entry.id} ${entry.description}`.toLowerCase().includes(query.toLowerCase()));
+  const matched = candidates.filter(entry => includeUnavailable || !unavailable(entry));
   return { cliVersion: inventory.version, domains: inventory.domains, total: matched.length, totalCatalog: inventory.entries.length,
-    commands: matched.slice(offset, offset + limit).map(entry => ({ command: entry.command, description: entry.description, risk: entry.risk, executable: !unavailable(entry), ...(unavailable(entry) ? { reason: unavailable(entry) } : {}) })),
+    includeUnavailable, omittedUnavailable: candidates.length - matched.length,
+    ...(query ? { alternativeRoutes: candidates.filter(entry => unavailable(entry) && routes[entry.id]?.alternatives).map(entry => ({ forTask: entry.description, ...routes[entry.id] })) } : {}),
+    commands: matched.slice(offset, offset + limit).map(entry => ({ command: entry.command, description: entry.description, risk: entry.risk, executable: !unavailable(entry), ...(unavailable(entry) ? { reason: unavailable(entry) } : {}), ...routes[entry.id] })),
     nextOffset: offset + limit < matched.length ? offset + limit : null, exceptions,
-    usage: 'Search by domain/name, then pass command for official help, flags and raw API JSON Schema. Executable means the bridge supports dispatch, not that the account has every scope or that every command has been tested. Choose a configured account alias explicitly. Ordinary commands are not implemented one by one in this bridge.' };
+    usage: 'Search returns executable user commands by default; pagination applies after filtering. Exact command lookup explains blocked routes and known alternatives. includeUnavailable=true is for diagnostics only. Executable does not prove account permission, acceptance, or support for every optional file parameter. Choose a configured user account; never switch to bot.' };
 }
 
 function checkInline(value: FlagValue, domain: string, depth = 0): void {
@@ -79,7 +128,7 @@ export function commandArguments(command: string[], flags: Record<string, FlagVa
   const entry = entries.get(command.join('/'));
   if (!entry) throw failure('unknown_command_use_catalog_search');
   const reason = unavailable(entry);
-  if (reason) throw failure(reason);
+  if (reason) throw Object.assign(failure(reason), { writeDisposition: 'not_dispatched', ...(routes[entry.id] || { instruction: 'Use lark_cli_catalog for executable user commands. Do not switch identity or infer that all routes for this task are unavailable.' }) });
   const risk = entry.risk!;
   if ((mode === 'read') !== (risk === 'read')) throw failure('command_risk_does_not_match_read_or_write_tool');
   if (risk === 'high-risk-write' && !highRiskConfirmed) throw failure('high_risk_command_requires_explicit_user_confirmation');
@@ -89,9 +138,8 @@ export function commandArguments(command: string[], flags: Record<string, FlagVa
   const blocked = reservedFlags(entry);
   for (const [name, value] of Object.entries(flags)) {
     if (name === 'download-resources' && value !== false) throw failure('message_resources_require_file_or_image_tool');
-    if (!/^[a-z][a-z0-9-]*$/.test(name) || !entry.flags[name] || blocked.has(name)) throw failure('unknown_or_bridge_reserved_flag_use_catalog');
-    if (/(?:^|-)(?:file|files|filepath|path|directory|dir|output|output-dir|input-file|attachment-path)(?:$|-)/.test(name) && !/(?:token|id|name|type|size|version)/.test(name)) throw failure('file_transport_requires_upload_or_read_tool');
-    if (/^(?:optional\.?\s*|required\.?\s*)?(?:regular\s+)?(?:local (?:image |file )?path|local file path|attachment file path)/i.test(entry.flags[name].description) || /(?:cwd-relative local path|file_path.*relative|clipboard)/i.test(entry.flags[name].description)) throw failure('file_transport_requires_upload_or_read_tool');
+    if (!/^[a-z][a-z0-9-]*$/.test(name) || !entry.flags[name] || blocked.has(name)) throw Object.assign(failure('unknown_or_bridge_reserved_flag_use_catalog'), { writeDisposition: 'not_dispatched', ...routes[entry.id] });
+    if (localFileFlag(name, entry.flags[name].description)) throw failure('file_transport_requires_upload_or_read_tool');
     checkInline(value, command[0]);
     if (entry.id === 'base/+form-submit' && name === 'json') {
       const body = typeof value === 'string' ? JSON.parse(value) : value;

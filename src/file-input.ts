@@ -50,12 +50,13 @@ export async function downloadInput(value, { maxBytes = MAX_UPLOAD_BYTES, redire
     return downloadInput(new URL(response.headers.location, url).href, { maxBytes, redirects: redirects - 1, signal });
   }
   if (response.statusCode !== 200) { response.destroy(); throw failure('file_download_failed_refresh_attachment_url'); }
-  if (Number(response.headers['content-length'] || 0) > maxBytes) { response.destroy(); throw failure('upload_exceeds_32_mib_limit'); }
+  const sizeError = maxBytes === MAX_UPLOAD_BYTES ? 'upload_exceeds_32_mib_limit' : 'file_download_exceeds_destination_limit';
+  if (Number(response.headers['content-length'] || 0) > maxBytes) { response.destroy(); throw failure(sizeError); }
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of response) {
     size += chunk.length;
-    if (size > maxBytes) { response.destroy(); throw failure('upload_exceeds_32_mib_limit'); }
+    if (size > maxBytes) { response.destroy(); throw failure(sizeError); }
     chunks.push(chunk);
   }
   if (!size) throw failure('empty_file_not_supported');

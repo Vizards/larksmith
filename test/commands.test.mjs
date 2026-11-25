@@ -26,8 +26,8 @@ test('user-only dispatch rejects both raw APIs and shortcuts restricted to bot i
 });
 
 test('annotated high-risk commands are discoverable with confirmation and identity checks intact', () => {
-  const annotated = catalog({ limit: 1000 }).commands
-    .map(({ command }) => catalog({ command }))
+  const annotated = catalog({ limit: 1000, includeUnavailable: true }).commands
+    .map(({ command }) => catalog({ command, includeUnavailable: true }))
     .filter(entry => entry.help.includes('Risk: high-risk-write ('));
   assert.equal(annotated.length, 39);
   assert.equal(annotated.filter(entry => entry.executable).length, 35);

@@ -28,11 +28,19 @@ larksmith 通过远程 MCP 提供官方飞书 CLI 能力。Agent 按任务选择
 }
 ```
 
-目录由 CLI schema 和官方 help 生成。固定版本 1.0.98 包含 784 项目录条目，
-668 项符合命令级静态调度条件；其余 102 项属于运行流程例外，13 项仅支持 bot，
-1 项聊天资源下载由专用文件/图片工具承接。
-各条目的 `executable`、参数说明和原因字段指导具体调用。实际调用使用所选账号的
-user scopes 和目标资源权限；业务验证以具体操作的测试结果为准。
+目录由 CLI schema 和官方 help 生成，默认搜索只列可派发的 user 命令，过滤后再分页。
+`includeUnavailable=true` 用于诊断上游完整目录；不会启用 bot、文件路径或其他受限能力。
+直接查不可用命令时返回限制与已确认的 `alternatives`，默认不返回可直接照抄的执行参数。
+搜索中的 `alternativeRoutes` 也会指出专用工具入口。没有已确认的替代路径时不猜测。
+
+例如原始 `im chats create` 的上游元数据仅支持 bot，但 `im +chat-create` 支持 user；
+应查后者的参数，不能直接搬用原始 JSON，也不能因此判定所有建群路径均不可用。
+两个快捷命令 `im +chat-create`、`im +chat-update` 都不接受 avatar；自定义群头像用下方
+IM 图片上传，再调用支持 user 的 `im chats update`。
+
+必须传本地文件的原始命令不标为可派发；可选的 `blockedParameters` 也不能使用。
+官方 help/skill 保留上游原文，可能包含 bot 或本地工作流，不能取代桥接目录判断。
+`executable=true` 仍不证明用户已授权所有 scopes、资源可见或该操作已实测。
 
 风险同时取自原始 API schema 和官方 help；help 支持风险标签后的括号说明。
 仅一处提供已知风险时使用该值；未知、重复或相互冲突的标注会阻止调度。
@@ -93,7 +101,20 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 `text` 仅适用于 UTF-8 文本；二进制使用 `chunk` 或 `resource`。
 通用命令不再接受 `download-resources=true`，避免仅返回马上失效的服务器临时路径。
 
-`lark_files_upload` 创建 Drive 文件，返回文件 token、URL、字节数和 SHA-256。
+`lark_files_upload` 默认 `destination=drive`，创建 Drive 文件，返回文件 token、URL、
+字节数和 SHA-256。IM 图片使用 `destination=im_image`，必须明确
+`imageType=avatar` 或 `message`，返回 `imageKey`（上游 `image_key`）。两类 token 不可互换。
+
+IM 图片上传复用官方 `im images create`、同一 user 身份、回执与临时文件清理。
+支持 PNG/JPEG/GIF/WebP，按字节签名识别，最大 10,000,000 字节；尺寸由飞书校验：
+头像不超过 4096×4096，GIF 同时不超过 2000×2000，其他消息图片不超过 12000×12000。
+不自动转换、缩图或发送消息。其他图片格式尚未纳入此传输适配。
+
+群头像流程：上传 `imageType=avatar` → 取原样 `imageKey` → 使用同一账号调用
+`lark_cli_write(command=["im","chats","update"], parameters={"chat-id":"oc_…","data":{"avatar":"返回的 imageKey"}})`
+→ 回读群信息。上传本身不会修改群；更新前需要用户修改该群的授权。
+不要自行补 `img_` 前缀：头像和消息图片返回的 key 格式可能不同。
+`folderToken` 仅适用 Drive。Docx、邮件、Base 和通用 IM 文件上传不在新增目标范围内。
 
 | 方式 | 用法 |
 | --- | --- |
@@ -110,7 +131,9 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 原生下载访问公开 HTTPS 目标，固定 DNS 解析结果，逐跳校验重定向，并限制时间和大小。
 原生附件、小型 base64 和分块上传共用校验和与回执流程。`inputRoute` 标识实际输入方式。
 
-分块上传绑定客户端、账号、requestId、文件名、大小和哈希。相同分片可重复提交；
+分块上传绑定客户端、账号、requestId、文件名、目标、图片用途、大小和哈希。
+`destination` / `imageType` 在 `begin` 时指定，后续 chunk/commit/status/cancel 不再传入。
+相同分片可重复提交；
 `status.stagedIndices` 包含已预留的位置，调用结果待确认时重新提交对应分片后再 commit。
 文件分片加密暂存于私有 Blob，24 小时后过期，上传完成即清理；每日任务继续清理过期数据。
 上传的 `begin` / `upload` 同样使用上述 60 分钟请求 ID；分块上传必须在这个窗口内
@@ -118,7 +141,8 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 首次提交的写入有效期。过期后先核对目标，再取消暂存并重新开始。
 
 暂存容量为最多 32 个上传清单、96 MiB 待完成文件。`cancel` 用于取消暂存任务；
-已创建的飞书文件通过相应删除命令管理。
+已创建的飞书文件通过相应删除命令管理。取消暂存不撤销已上传的 IM 图片或群头像修改；
+当前官方目录没有删除 IM 图片资源的入口，不承诺此类资源随群解散一并删除。
 
 优先使用客户端原生附件，减少逐片请求。以 24 MiB 文件为例，分块方式需要 96 次 chunk
 调用。读取不同字节窗口时会重新下载源文件；需要完整文件时可组装分片并核对 SHA-256。
@@ -130,7 +154,7 @@ availableImages；需要其他图片时继续指定序号。工具先读取当�
 | 范围 | 处理方式与原因 |
 | --- | --- |
 | Auth、config、profile、update、doctor、whoami | 服务管理账号绑定、续期和固定 CLI 版本，统一完成运行环境配置。 |
-| 图片、Drive 文件、文档附件 | 专用工具传输实际字节并返回 MCP 内容。Drive 上传和 Drive/Docx media 下载已适配；其他媒体位置使用对应的媒体 token 流程。 |
+| 图片、Drive 文件、文档附件 | 专用工具传输实际字节并返回 MCP 内容。上传目标为 Drive 文件与 IM 图片（avatar/message），它们的 CLI multipart 输入需要服务端固定临时文件。群设置继续通过通用派发，不另加建群专用工具。其他媒体位置未因此获得上传支持。 |
 | `docs/+create`、`docs/+update` | 接收校验后的 DocxXML 子集，生成临时输入文件；支持已有 token 引用。 |
 | Slides XML、mail HTML、Base form JSON | 内联内容及已有 token 引用走通用调度；带本地附件的工作流在 CLI 环境执行。 |
 | file/path/output/upload/clipboard 参数 | 使用文件工具承接本地 I/O；混合 token/路径参数可通过支持 token 的原始 API 调用。 |
